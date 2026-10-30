@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>블록 아레나</title>
+  <link rel="stylesheet" href="/client/style.css">
+  <script type="importmap">{ "imports": { "three": "/vendor/three.module.js" } }</script>
+</head>
+<body>
+  <div id="lobby" class="overlay">
+    <div class="panel">
+      <h1>블록 아레나</h1>
+      <label>이름<input id="name" maxlength="12" placeholder="플레이어"></label>
+      <label>방 코드<input id="room" maxlength="4" placeholder="비우면 새 방"></label>
+      <button id="join">입장</button>
+      <p id="error"></p>
+    </div>
+  </div>
+
+  <div id="resume" class="overlay hidden">
+    <div class="panel">
+      <p class="big">클릭해서 계속</p>
+      <p class="hint">WASD 이동 · Space 점프 · 클릭 사격 · R 재장전<br>B 상점 · 오른쪽 클릭 저격 조준 · Tab 점수판 · Esc 마우스 풀기</p>
+    </div>
+  </div>
+
+  <div id="hud" class="hidden">
+    <div id="info">
+      <div>방 코드 <b id="code"></b></div>
+      <ul id="players"></ul>
+    </div>
+    <div id="round"><div id="round-top"></div><div id="round-sub"></div><div id="card-tag"></div></div>
+    <div id="cards" class="hidden">
+      <div id="cards-title"></div>
+      <ul id="cards-list"></ul>
+    </div>
+    <div id="side">
+      <canvas id="minimap"></canvas>
+      <div id="ping"></div>
+      <ul id="feed"></ul>
+    </div>
+    <div id="crosshair"></div>
+    <div id="hitmarker" class="hidden"></div>
+    <div id="center" class="hidden"></div>
+    <div id="vignette"></div>
+    <div id="outside" class="hidden">자기장 밖</div>
+    <div id="scope" class="hidden"></div>
+    <div id="banner" class="hidden"><div id="banner-title"></div><div id="banner-sub"></div></div>
+    <div id="hp"><span id="hp-num">100</span><div class="bar"><div id="hp-bar"></div></div></div>
+    <div id="ammo">
+      <div id="money"></div>
+      <div id="weapon-name"></div>
+      <div><span id="reload" class="hidden">재장전 중</span><span id="ammo-num"></span><span id="ammo-max"></span></div>
+    </div>
+    <div id="ghost" class="hidden">
+      <div class="ghost-title">망령 <span id="ghost-cd"></span></div>
+      <div class="ghost-keys" id="ghost-keys">좌클릭 블록 놓기 · 우클릭 상자/망령 블록 지우기 · Space/Shift 위아래</div>
+      <div id="ghost-vote"></div>
+    </div>
+    <div id="death" class="hidden"><p id="death-by"></p><p id="death-watch"></p><p id="death-timer"></p></div>
+    <div id="shop" class="hidden">
+      <div class="shop-head"><b>상점</b><span id="shop-money"></span></div>
+      <ul id="shop-list"></ul>
+      <div class="shop-foot" id="shop-foot">숫자 키로 구매 · B 닫기 · 살아남으면 다음 라운드에도 유지</div>
+    </div>
+    <div id="touch-ui">
+      <div id="stick" class="hidden"><div id="knob"></div></div>
+      <div class="tbtn big hidden" id="t-fire">사격</div>
+      <div class="tbtn hidden" id="t-jump">점프</div>
+      <div class="tbtn small hidden" id="t-reload">R</div>
+      <div class="tbtn small hidden" id="t-aim" data-act="aim">조준</div>
+      <div class="tbtn pill hidden" id="t-shop" data-act="shop">상점</div>
+      <div class="tbtn pill" id="t-board" data-act="board">점수</div>
+      <div class="tbtn big ghost hidden" id="t-place" data-act="place">놓기</div>
+      <div class="tbtn small ghost hidden" id="t-remove" data-act="remove">지우기</div>
+      <div class="tbtn ghost hidden" id="t-up">위</div>
+      <div class="tbtn ghost hidden" id="t-down">아래</div>
+      <div class="tbtn pill ghost hidden" id="t-vote" data-act="vote">여기로 투표</div>
+    </div>
+    <div id="board" class="hidden">
+      <table><thead><tr><th>이름</th><th>라운드 승</th><th>처치</th><th>죽음</th></tr></thead><tbody id="board-rows"></tbody></table>
+    </div>
+  </div>
+
+  <div id="rotate"><p>가로로 돌려 주세요</p></div>
+  <script type="module" src="/client/main.js"></script>
+</body>
+</html>
