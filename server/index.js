@@ -33,10 +33,11 @@ const RULES = {
 // ---- 정적 파일 ----
 const ROUTES = [
   ['/vendor/', 'node_modules/three/build/'],
+  ['/vendor-addons/', 'node_modules/three/examples/jsm/'],
   ['/client/', 'client/'],
   ['/shared/', 'shared/'],
 ];
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.glb': 'model/gltf-binary' };
 
 const server = http.createServer((req, res) => {
   let p;
@@ -490,7 +491,7 @@ function fire(room, p, inp, spread) {
   for (const q of room.players.values()) {
     if (q === p || !q.alive) continue;
     const pos = positionAt(q, rt);
-    if (pos) targets.push({ q, boxes: hitboxes(pos, scaleOf(room, q)) });
+    if (pos) targets.push({ q, boxes: hitboxes(pos, scaleOf(room, q), charOf(q.char).hit) });
   }
   const ends = [], dealt = new Map(); // q -> { dmg, head }
   for (const d of shotDirs(s, inp.y, inp.p, spread, inp.s)) {

@@ -1,6 +1,8 @@
 // 장면, 블록 맵, 플레이어 아바타
 import * as THREE from 'three';
 import { W, D, H, B } from '/shared/map.js';
+import { charOf } from '/shared/characters.js';
+import { models, createModel } from './models.js';
 
 export const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -135,18 +137,46 @@ export function makeAvatar(name, color) {
   const mats = [];
   body.traverse((o) => { if (o.material) { o.material.transparent = true; mats.push(o.material); } });
   const baseColors = mats.map((m) => m.color.clone());
-  return { root, body, head, legL, legR, armL, armR, gun, tag, mats, baseColors, phase: 0, fall: 0, flash: 0, w: 0, ghost: false, char: null };
+  return { root, body, head, legL, legR, armL, armR, gun, tag, mats, baseColors, phase: 0, fall: 0, flash: 0, w: 0, ghost: false, torso, charKey: null, model: null };
 }
 
-// 캐릭터마다 머리 색을 다르게 (몸통·팔은 플레이어 색 그대로)
-export function setAvatarChar(a, color) {
-  if (a.char === color) return;
-  a.char = color;
-  const m = a.head.children[0].material;
-  const i = a.mats.indexOf(m);
-  a.baseColors[i].set(color);
-  if (!a.ghost) m.color.set(color);
-  else m.color.copy(a.baseColors[i]).lerp(new THREE.Color('#d6c2ff'), 0.6);
+// 캐릭터 모습: 모델 파일이 있으면 치이카와 모델(키·폭은 판정 상자에 맞춤), 없으면 블록 아바타 머리 색만
+const blockParts = (a) => [a.legL, a.legR, a.armL, a.armR, a.torso, a.head];
+export function setAvatarChar(a, id) {
+  const key = `${id}:${models.ready}`;
+  if (a.charKey === key) return;
+  a.charKey = key;
+  const def = charOf(id);
+  if (a.model) { a.body.remove(a.model.object); a.model = null; }
+  const m = models.ready && createModel(id, def.hit.h);
+  if (m) {
+    m.object.traverse((o) => { o.userData.shared = true; }); // 지오메트리·텍스처는 복제본끼리 같이 씀 (지우지 않기)
+    a.body.add(m.object);
+    a.model = m;
+    a.tag.position.y = def.hit.h + 0.35;
+    a.body.scale.setScalar(1);
+  } else {
+    a.body.scale.setScalar(def.hit.h / 1.88); // 블록 아바타도 판정 키에 맞춤
+    const hm = a.head.children[0].material, i = a.mats.indexOf(hm);
+    a.baseColors[i].set(def.color);
+    a.tag.position.y = def.hit.h + 0.35;
+  }
+  for (const p of blockParts(a)) p.visible = !m;
+  const g = a.ghost;
+  a.ghost = null;
+  setAvatarGhost(a, g); // 색·투명도 다시 맞추기
+}
+
+// 걷기: 모델은 통통 튀며 찌그러지게 (project_fps의 걷기 바운스), 맞으면 하얗게 번쩍
+export function animateModel(a, amt, flash) {
+  if (!a.model) return;
+  const o = a.model.object, hop = Math.abs(Math.sin(a.phase)) * 0.18 * amt, sq = Math.cos(a.phase * 2) * 0.06 * amt;
+  const h = o.userData.h ?? (o.userData.h = o.scale.y);
+  o.position.y = hop;
+  o.scale.set(h * (1 + sq), h * (1 - sq), h * (1 + sq));
+  o.rotation.z = Math.sin(a.phase) * 0.08 * amt;
+  if (a.ghost) return;
+  a.model.mats.forEach((m, i) => { m.color.copy(a.model.baseColors[i]); if (flash) m.color.lerp(new THREE.Color('#ff8080'), 0.6); });
 }
 
 // 망령: 반투명하게, 총은 숨김
@@ -154,12 +184,16 @@ export function setAvatarGhost(a, ghost) {
   if (a.ghost === ghost) return;
   a.ghost = ghost;
   a.gun.visible = !ghost;
-  a.mats.forEach((m, i) => {
+  const tint = (mats, base) => mats.forEach((m, i) => {
+    m.userData.t0 ??= m.transparent; // 모델 재질은 망령일 때만 반투명 (평소엔 원래대로)
+    if (m.transparent !== (ghost || m.userData.t0)) { m.transparent = ghost || m.userData.t0; m.needsUpdate = true; }
     m.opacity = ghost ? 0.3 : 1;
     m.depthWrite = !ghost;
-    m.color.copy(a.baseColors[i]);
+    m.color.copy(base[i]);
     if (ghost) m.color.lerp(new THREE.Color('#d6c2ff'), 0.6);
   });
+  tint(a.mats, a.baseColors);
+  if (a.model) tint(a.model.mats, a.model.baseColors);
   a.tag.material.opacity = ghost ? 0.5 : 1;
 }
 
@@ -221,5 +255,8 @@ export function setFog(dense) {
 
 export function removeAvatar(a) {
   scene.remove(a.root);
-  a.root.traverse((o) => { o.geometry?.dispose(); o.material?.map?.dispose(); o.material?.dispose(); });
+  a.root.traverse((o) => {
+    if (o.userData.shared) { o.material?.dispose(); return; } // 모델: 복제한 재질만 지움
+    o.geometry?.dispose(); o.material?.map?.dispose(); o.material?.dispose();
+  });
 }

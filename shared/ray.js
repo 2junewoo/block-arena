@@ -41,10 +41,14 @@ export function rayBox(o, d, min, max) {
   return t0;
 }
 
-// 플레이어 발 위치 기준 머리·몸통 판정 상자 (k = 크기 배율, 거인 카드)
-export function hitboxes({ x, y, z }, k = 1) {
+// 플레이어 발 위치 기준 머리·몸통 판정 상자
+// k = 크기 배율(거인 카드), hit = 캐릭터 판정 크기 { h: 키, w: 폭, head: 위쪽 머리 비율 } (characters.js)
+const DEFAULT_HIT = { h: 1.88, w: 0.8, head: 0.27 };
+export function hitboxes({ x, y, z }, k = 1, hit = DEFAULT_HIT) {
+  const h = hit.h * k, neck = y + h * (1 - hit.head);
+  const bw = (hit.w / 2) * k, hw = bw * 0.9;
   return [
-    { head: true, min: [x - 0.25 * k, y + 1.38 * k, z - 0.25 * k], max: [x + 0.25 * k, y + 1.88 * k, z + 0.25 * k] },
-    { head: false, min: [x - 0.4 * k, y, z - 0.4 * k], max: [x + 0.4 * k, y + 1.38 * k, z + 0.4 * k] },
+    { head: true, min: [x - hw, neck, z - hw], max: [x + hw, y + h, z + hw] },
+    { head: false, min: [x - bw, y, z - bw], max: [x + bw, neck, z + bw] },
   ];
 }

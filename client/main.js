@@ -5,10 +5,11 @@ import { CHARACTERS, CHAR_IDS, charOf, validChar } from '/shared/characters.js';
 import { rayBlocks, rayBox, hitboxes } from '/shared/ray.js';
 import { zoneStatus, ZONE_START } from '/shared/zone.js';
 import { CARDS, GIANT, gravityMul } from '/shared/cards.js';
-import { renderer, scene, camera, buildWorld, makeAvatar, removeAvatar, setAvatarWeapon, setAvatarChar, setAvatarGhost, setGhostPreview, setZone, setFog, BLOCK_COLORS } from './world.js';
+import { renderer, scene, camera, buildWorld, makeAvatar, removeAvatar, setAvatarWeapon, setAvatarChar, animateModel, setAvatarGhost, setGhostPreview, setZone, setFog, BLOCK_COLORS } from './world.js';
 import { setGunVisible, setGunModel, setScoped, muzzleWorld, gunFired, updateGun, tracer, burst, updateFx, initAudio, sfx } from './fx.js';
 import { buildMinimap, drawMinimap } from './minimap.js';
 import { isTouch, touch, initTouch, resetTouch } from './touch.js';
+import { models, loadModels, thumbnails } from './models.js';
 
 const $ = (id) => document.getElementById(id);
 let map = createMap();
@@ -110,6 +111,7 @@ let card = null, giantId = 0, cardPick = null; // 이번 라운드 규칙 카드
 const grav = () => gravityMul(card);
 const scaleOf = (id) => (id && id === giantId ? GIANT.scale : 1);
 let phase = 'L', round = 0, timeLeft = 0, zoneTime = 0, zone = null, starting = false;
+let thumbs = null; // 캐릭터 id -> 썸네일 이미지 주소 (모델 파일이 있을 때)
 let myChar = validChar(storageGet('char')); // 고른 캐릭터 (서버가 바꾸면 roster로 다시 맞춘다)
 const players = new Map(); // id -> { name, color, char, kills, deaths, wins, blocked }
 const others = new Map(); // id -> avatar (내 것도 포함, 살아 있을 땐 숨김)
@@ -118,6 +120,15 @@ const INTERP_MS = 100;
 
 $('name').value = storageGet('name');
 renderCharList($('lobby-chars'), false);
+// 모델 파일이 있으면: 캐릭터 카드에 얼굴 그림, 아바타를 모델로, 입장 화면에 크레디트
+loadModels().then((ok) => {
+  if (!ok) return;
+  thumbs = thumbnails();
+  renderCharList($('lobby-chars'), false);
+  if (charSelOpen) renderCharSel();
+  for (const [id, a] of others) setAvatarChar(a, players.get(id)?.char);
+  $('credit').classList.remove('hidden');
+});
 $('join').addEventListener('click', connect);
 for (const id of ['name', 'room']) $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') connect(); });
 
@@ -271,7 +282,7 @@ function onRoster(list) {
     ids.add(p.id);
     players.set(p.id, p);
     if (!others.has(p.id)) others.set(p.id, makeAvatar(p.name, p.color));
-    setAvatarChar(others.get(p.id), charOf(p.char).color);
+    setAvatarChar(others.get(p.id), p.char);
     if (p.id === myId && p.char !== myChar) { myChar = p.char; storageSet('char', myChar); }
   }
   if (charSelOpen) renderCharSel();
@@ -513,9 +524,9 @@ function renderCharList(el, keysShown) {
     li.className = id === myChar ? 'sel' : '';
     li.dataset.char = id;
     li.style.setProperty('--c', c.color);
-    li.innerHTML = '<kbd></kbd><span class="nm"></span><span class="rl"></span><span class="st"></span><span class="st"></span><span class="ab"></span>';
+    li.innerHTML = (thumbs?.[id] ? '<img class="thumb" alt="">' : '') + '<kbd></kbd><span class="nm"></span><span class="rl"></span><span class="st"></span><span class="st"></span><span class="ab"></span>';
+    if (thumbs?.[id]) li.querySelector('img').src = thumbs[id];
     li.querySelector('kbd').textContent = i + 1;
-    li.querySelector('kbd').hidden = !keysShown;
     li.querySelector('.nm').textContent = c.name;
     li.querySelector('.rl').textContent = c.role;
     const st = li.querySelectorAll('.st');
@@ -635,6 +646,7 @@ function updateOthers(view, dt, hideId) {
     a.tag.visible = p.alive;
     a.flash = Math.max(0, a.flash - dt);
     for (const m of a.mats) m.emissive.setScalar(a.flash > 0 ? 0.6 : 0);
+    animateModel(a, p.ghost ? 0 : amt, a.flash > 0);
   }
 }
 
@@ -648,7 +660,7 @@ function localShot(inp, spread) {
     let best = wall ? wall.t : w.range, hitPlayer = false;
     for (const [id, a] of others) {
       if (id === myId || !a.root.visible || a.fall > 0.5 || a.ghost) continue;
-      for (const hb of hitboxes(a.root.position, scaleOf(id))) {
+      for (const hb of hitboxes(a.root.position, scaleOf(id), charOf(players.get(id)?.char).hit)) {
         const t = rayBox(o, d, hb.min, hb.max);
         if (t < best) { best = t; hitPlayer = true; }
       }

@@ -23,6 +23,10 @@ npm start          # http://localhost:3000
 
 같은 와이파이의 친구는 `http://<내 IP>:3000`, Tailscale이면 Tailscale IP로 접속.
 
+## 캐릭터 모델 (선택)
+
+`client/models/chiikawa_and_friends.glb`가 있으면 캐릭터가 치이카와 모델로 보이고, 없으면 블록 아바타로 보인다. 모델은 "chiikawa and friends" by Nini (CC BY-NC 4.0, 비상업적 이용만)라서 저장소에는 넣지 않는다 (`.gitignore`). [project_fps](https://github.com/sol0404/project_fps)의 `client/models/`에서 가져오면 된다.
+
 ## 테스트
 
 `DEV=1 npm start`로 띄우면 테스트용 순간이동(`{t:'tp'}`) 메시지를 받는다. 평소엔 꺼 둔다.
@@ -35,7 +39,7 @@ npm start          # http://localhost:3000
 - `shared/ray.js` 사격 광선 검사 (블록, 머리·몸통 판정 상자)
 - `shared/zone.js` 자기장 일정
 - `server/index.js` 정적 파일 + WebSocket, 60틱 판정, 초당 20번 상태 전송
-- `client/world.js` 장면·맵·아바타, `client/fx.js` 총 모델·탄 궤적·소리, `client/minimap.js` 미니맵, `client/touch.js` 터치 조작, `client/main.js` 네트워크·입력·HUD·캐릭터 선택
+- `client/models.js` 캐릭터 모델 불러오기, `client/world.js` 장면·맵·아바타, `client/fx.js` 총 모델·탄 궤적·소리, `client/minimap.js` 미니맵, `client/touch.js` 터치 조작, `client/main.js` 네트워크·입력·HUD·캐릭터 선택
 
 ## 진행
 
