@@ -135,7 +135,18 @@ export function makeAvatar(name, color) {
   const mats = [];
   body.traverse((o) => { if (o.material) { o.material.transparent = true; mats.push(o.material); } });
   const baseColors = mats.map((m) => m.color.clone());
-  return { root, body, head, legL, legR, armL, armR, gun, tag, mats, baseColors, phase: 0, fall: 0, flash: 0, w: 0, ghost: false };
+  return { root, body, head, legL, legR, armL, armR, gun, tag, mats, baseColors, phase: 0, fall: 0, flash: 0, w: 0, ghost: false, char: null };
+}
+
+// 캐릭터마다 머리 색을 다르게 (몸통·팔은 플레이어 색 그대로)
+export function setAvatarChar(a, color) {
+  if (a.char === color) return;
+  a.char = color;
+  const m = a.head.children[0].material;
+  const i = a.mats.indexOf(m);
+  a.baseColors[i].set(color);
+  if (!a.ghost) m.color.set(color);
+  else m.color.copy(a.baseColors[i]).lerp(new THREE.Color('#d6c2ff'), 0.6);
 }
 
 // 망령: 반투명하게, 총은 숨김
@@ -173,7 +184,7 @@ export function setGhostPreview(place, remove, ready) {
   removeBox.material.color.set(ready ? '#ff4a4a' : '#884444');
 }
 
-const AVATAR_GUN_LEN = [0.5, 0.8, 1, 0.9, 1.35];
+const AVATAR_GUN_LEN = [1, 1.2, 0.8]; // 카빈, 라이플, SMG
 export function setAvatarWeapon(a, w) {
   if (a.w === w) return;
   a.w = w;

@@ -6,10 +6,10 @@
 export const isTouch = matchMedia('(pointer: coarse)').matches || new URLSearchParams(location.search).has('touch');
 
 // main.js가 읽는 상태
-export const touch = { move: [0, 0], fire: false, jump: false, reload: false, down: false };
+export const touch = { move: [0, 0], fire: false, jump: false, reload: false, down: false, skill: false };
 
 const $ = (id) => document.getElementById(id);
-const HOLD = { 't-fire': 'fire', 't-jump': 'jump', 't-reload': 'reload', 't-down': 'down', 't-up': 'jump' };
+const HOLD = { 't-fire': 'fire', 't-jump': 'jump', 't-reload': 'reload', 't-down': 'down', 't-up': 'jump', 't-skill': 'skill' };
 const STICK_R = 50;
 
 let handlers = null;
@@ -30,10 +30,10 @@ function onStart(e) {
   e.preventDefault();
   for (const t of e.changedTouches) {
     const el = document.elementFromPoint(t.clientX, t.clientY);
-    // 상점·카드 목록은 눌러서 고른다
-    const item = el?.closest('[data-shop], [data-card]');
+    // 캐릭터·카드 목록은 눌러서 고른다
+    const item = el?.closest('#charsel [data-char], [data-card]');
     if (item) {
-      if (item.dataset.shop) handlers.tap('buy', Number(item.dataset.shop));
+      if (item.dataset.char) handlers.tap('pickChar', item.dataset.char);
       else handlers.tap('card', Number(item.dataset.card));
       continue;
     }
@@ -97,7 +97,7 @@ function onEnd(e) {
 export function resetTouch() {
   touches.clear();
   touch.move = [0, 0];
-  touch.fire = touch.jump = touch.reload = touch.down = false;
+  touch.fire = touch.jump = touch.reload = touch.down = touch.skill = false;
   $('stick')?.classList.add('hidden');
   for (const b of document.querySelectorAll('.tbtn.on')) b.classList.remove('on');
 }

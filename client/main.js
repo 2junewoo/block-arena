@@ -1,10 +1,11 @@
 import * as THREE from 'three';
 import { createMap, B, BLOCK_HP, GHOST_REMOVABLE, W, D, H } from '/shared/map.js';
-import { TICK, P, KEY, WEAPONS, MAX_HP, GHOST, stepPlayer, stepGhost, stepWeapon, shotDirs, aimDir, maskInput } from '/shared/sim.js';
+import { TICK, P, KEY, WEAPONS, GHOST, stepPlayer, stepSkill, stepGhost, stepWeapon, shotDirs, aimDir, maskInput } from '/shared/sim.js';
+import { CHARACTERS, CHAR_IDS, charOf, validChar } from '/shared/characters.js';
 import { rayBlocks, rayBox, hitboxes } from '/shared/ray.js';
 import { zoneStatus, ZONE_START } from '/shared/zone.js';
 import { CARDS, GIANT, gravityMul } from '/shared/cards.js';
-import { renderer, scene, camera, buildWorld, makeAvatar, removeAvatar, setAvatarWeapon, setAvatarGhost, setGhostPreview, setZone, setFog, BLOCK_COLORS } from './world.js';
+import { renderer, scene, camera, buildWorld, makeAvatar, removeAvatar, setAvatarWeapon, setAvatarChar, setAvatarGhost, setGhostPreview, setZone, setFog, BLOCK_COLORS } from './world.js';
 import { setGunVisible, setGunModel, setScoped, muzzleWorld, gunFired, updateGun, tracer, burst, updateFx, initAudio, sfx } from './fx.js';
 import { buildMinimap, drawMinimap } from './minimap.js';
 import { isTouch, touch, initTouch, resetTouch } from './touch.js';
@@ -31,10 +32,10 @@ addEventListener('keydown', (e) => {
   if (!joined) return;
   if (e.code === 'Tab') { e.preventDefault(); $('board').classList.remove('hidden'); }
   if (!locked()) return;
-  if (e.code === 'KeyB' && !e.repeat) toggleShop();
+  if (e.code === 'KeyC' && !e.repeat) toggleCharSel();
   if (e.code === 'KeyF' && !e.repeat && ghost) ghostVote();
   const n = e.code.match(/^Digit([1-5])$/);
-  if (n && shopOpen) buy(Number(n[1]) - 1);
+  if (n && charSelOpen && CHAR_IDS[Number(n[1]) - 1]) chooseChar(CHAR_IDS[Number(n[1]) - 1]);
   if (n && cardPick && cardPick.chooser === myId && !cardPick.picked) pickCard(Number(n[1]) - 1);
   keys.add(e.code);
   if (e.code === 'Space') e.preventDefault();
@@ -86,6 +87,7 @@ function keyBits() {
     if (touch.down) k |= KEY.DOWN;
     if (touch.reload) k |= KEY.RELOAD;
     if (touch.fire && alive) k |= KEY.FIRE;
+    if (touch.skill) k |= KEY.SKILL;
   }
   if (keys.has('KeyW')) k |= KEY.F;
   if (keys.has('KeyS')) k |= KEY.B;
@@ -94,6 +96,7 @@ function keyBits() {
   if (keys.has('Space')) k |= KEY.J;
   if (keys.has('ShiftLeft') || keys.has('ShiftRight')) k |= KEY.DOWN;
   if (keys.has('KeyR')) k |= KEY.RELOAD;
+  if (keys.has('KeyE')) k |= KEY.SKILL;
   if (firing) k |= KEY.FIRE;
   return k;
 }
@@ -101,18 +104,20 @@ function keyBits() {
 // ---- 상태 ----
 let ws = null, joined = false, myId = 0;
 let me = null, prev = null, seq = 0, pending = [];
-let alive = true, hp = MAX_HP, money = 0, killerId = 0, respawnAt = 0, spectateId = 0;
+let alive = true, hp = 0, killerId = 0, respawnAt = 0, spectateId = 0;
 let ghost = false, ghostReadyAt = 0, ghostTarget = null, votes = null, voted = false;
 let card = null, giantId = 0, cardPick = null; // 이번 라운드 규칙 카드, 거인 id, 고르는 중인 카드
 const grav = () => gravityMul(card);
 const scaleOf = (id) => (id && id === giantId ? GIANT.scale : 1);
 let phase = 'L', round = 0, timeLeft = 0, zoneTime = 0, zone = null, starting = false;
-const players = new Map(); // id -> { name, color, kills, deaths, wins }
+let myChar = validChar(storageGet('char')); // 고른 캐릭터 (서버가 바꾸면 roster로 다시 맞춘다)
+const players = new Map(); // id -> { name, color, char, kills, deaths, wins, blocked }
 const others = new Map(); // id -> avatar (내 것도 포함, 살아 있을 땐 숨김)
 let snaps = []; // [{ t, tick, ps: Map }]
 const INTERP_MS = 100;
 
 $('name').value = storageGet('name');
+renderCharList($('lobby-chars'), false);
 $('join').addEventListener('click', connect);
 for (const id of ['name', 'room']) $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') connect(); });
 
@@ -127,7 +132,7 @@ function connect() {
   const name = $('name').value.trim();
   storageSet('name', name);
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`);
-  ws.onopen = () => ws.send(JSON.stringify({ t: 'join', name, room: $('room').value.trim() }));
+  ws.onopen = () => ws.send(JSON.stringify({ t: 'join', name, room: $('room').value.trim(), char: myChar }));
   ws.onmessage = (e) => onMessage(JSON.parse(e.data));
   ws.onclose = () => {
     const wasJoined = joined;
@@ -138,7 +143,7 @@ function connect() {
     snaps = [];
     zone = null;
     setZone(null);
-    closeShop();
+    closeCharSel();
     resetTouch();
     for (const id of ['hud', 'resume', 'death', 'board', 'banner']) $(id).classList.add('hidden');
     $('lobby').classList.remove('hidden');
@@ -162,7 +167,7 @@ function onMessage(msg) {
       me = { ...msg.state };
       prev = { ...me };
       seq = 0; pending = [];
-      alive = true; hp = MAX_HP;
+      alive = true; hp = charOf(me.c).hp;
       phase = msg.ph; round = msg.rd;
       setCard(msg.card, msg.giant);
       map = createMap();
@@ -183,8 +188,8 @@ function onMessage(msg) {
       ghostReadyAt = performance.now() + msg.sec * 1000;
       sfx.buy();
       break;
-    case 'ghostCoin':
-      centerMsg(`+${msg.n} 코인 · 내 블록이 총알을 막음 (${msg.total}/${GHOST.coinCap})`);
+    case 'ghostBlocked':
+      centerMsg(`내 블록이 피해 ${msg.n}을 막음 (이번 라운드 ${msg.total})`);
       sfx.hit(false);
       break;
     case 'cards':
@@ -209,7 +214,7 @@ function onMessage(msg) {
       break;
     case 'phase': onPhase(msg); break;
     case 'roundEnd':
-      if (msg.winner) banner(`${nameOf(msg.winner)} 라운드 승리`, msg.winner === myId ? '+1000 보너스' : '', colorOf(msg.winner));
+      if (msg.winner) banner(`${nameOf(msg.winner)} 라운드 승리`, '', colorOf(msg.winner));
       else banner('무승부', '살아남은 사람이 없습니다');
       break;
     case 'matchEnd':
@@ -246,13 +251,13 @@ function onPhase({ ph, rd, starting: st }) {
   if (ph !== 'E') { cardPick = null; renderCards(); }
   if (ph === 'B') {
     setCard(null, 0); // 카드가 있으면 바로 뒤에 오는 card 메시지로 다시 정해진다
-    banner(`${rd}라운드`, isTouch ? '구매 시간 · 상점에서 눌러서 구매' : '구매 시간 · B 상점 · 숫자 1~5로 구매');
+    banner(`${rd}라운드`, isTouch ? '준비 시간 · 캐릭터 버튼으로 변경' : '준비 시간 · C 캐릭터 변경 · E 스킬');
     sfx.round();
-    if (alive) openShop();
+    if (alive) openCharSel();
     $('board').classList.add('hidden');
   } else if (ph === 'R') {
     banner('시작!', '자기장 밖에 있으면 체력이 줄어듭니다', '', 1500);
-    closeShop();
+    closeCharSel();
   } else if (ph === 'L') {
     if (st) banner('곧 경기 시작', '5초 뒤 1라운드', '', 2000);
     $('board').classList.add('hidden');
@@ -266,7 +271,10 @@ function onRoster(list) {
     ids.add(p.id);
     players.set(p.id, p);
     if (!others.has(p.id)) others.set(p.id, makeAvatar(p.name, p.color));
+    setAvatarChar(others.get(p.id), charOf(p.char).color);
+    if (p.id === myId && p.char !== myChar) { myChar = p.char; storageSet('char', myChar); }
   }
+  if (charSelOpen) renderCharSel();
   for (const [id, a] of others) if (!ids.has(id)) { removeAvatar(a); others.delete(id); }
 
   $('players').innerHTML = '';
@@ -283,12 +291,15 @@ function onRoster(list) {
   for (const p of rows) {
     const tr = document.createElement('tr');
     if (p.id === myId) tr.className = 'me';
-    tr.innerHTML = '<td><i></i><span></span></td><td></td><td></td><td></td>';
+    tr.innerHTML = '<td><i></i><span></span></td><td></td><td></td><td></td><td></td><td></td>';
     tr.querySelector('i').style.background = p.color;
     tr.querySelector('span').textContent = p.name;
-    tr.children[1].textContent = p.wins;
-    tr.children[2].textContent = p.kills;
-    tr.children[3].textContent = p.deaths;
+    tr.children[1].textContent = charOf(p.char).name;
+    tr.children[1].style.color = charOf(p.char).color;
+    tr.children[2].textContent = p.wins;
+    tr.children[3].textContent = p.kills;
+    tr.children[4].textContent = p.deaths;
+    tr.children[5].textContent = p.blocked;
     $('board-rows').append(tr);
   }
 }
@@ -301,18 +312,17 @@ function onSnapshot(msg) {
   votes = msg.vt;
   if ((msg.rc?.[0] ?? null) !== card || (msg.rc?.[1] ?? 0) !== giantId) setCard(msg.rc?.[0] ?? null, msg.rc?.[1] ?? 0);
   const ps = new Map();
-  for (const [id, x, y, z, vx, vy, vz, g, pyaw, ppitch, last, php, palive, ammo, cd, rl, heat, w, tr, pmoney, pghost] of msg.ps) {
+  for (const [id, x, y, z, vx, vy, vz, g, pyaw, ppitch, last, php, palive, ammo, cd, rl, heat, w, tr, pghost, c, ab, dash, dx, dz] of msg.ps) {
     ps.set(id, { x, y, z, yaw: pyaw, pitch: ppitch, alive: !!palive, ghost: !!pghost, w });
     if (id !== myId) continue;
     hp = php;
-    money = pmoney;
     pending = pending.filter((inp) => inp.s > last);
     const wasAlive = alive;
     alive = !!palive;
     if (alive) {
       // 서버 상태로 맞춘 뒤, 서버가 아직 처리 안 한 입력을 다시 적용 (예측 보정)
-      me = { x, y, z, vx, vy, vz, g: !!g, w, ammo, cd, rl, heat, tr: !!tr };
-      for (const inp of pending) { stepPlayer(me, inp, map, grav()); stepWeapon(me, inp.k); }
+      me = { x, y, z, vx, vy, vz, g: !!g, c, w, ammo, cd, rl, heat, tr: !!tr, ab, dash, dx, dz };
+      for (const inp of pending) { stepSkill(me, inp, grav()); stepPlayer(me, inp, map, grav()); stepWeapon(me, inp.k); }
       if (!wasAlive) { prev = { ...me }; onRespawn(); }
     } else if (pghost) {
       // 망령 위치도 서버 기준으로 맞추고 아직 처리 안 된 입력을 다시 적용
@@ -336,8 +346,8 @@ function onRespawn() {
     $('ghost').classList.add('hidden');
     setGhostPreview(null, null, false);
   }
-  // 구매 시간 알림이 부활보다 먼저 오므로, 살아난 뒤에 상점을 연다
-  if (phase === 'B') openShop();
+  // 준비 시간 알림이 부활보다 먼저 오므로, 살아난 뒤에 캐릭터 창을 연다
+  if (phase === 'B') openCharSel();
 }
 
 function enterGhost() {
@@ -345,7 +355,7 @@ function enterGhost() {
   voted = false;
   firing = aiming = false;
   setGunVisible(false);
-  closeShop();
+  closeCharSel();
   $('death').classList.add('hidden');
   $('ghost').classList.remove('hidden');
   prev = { ...me };
@@ -381,7 +391,7 @@ function ghostVote() {
 function onDeathLocal() {
   firing = aiming = false;
   setGunVisible(false);
-  closeShop();
+  closeCharSel();
   $('death').classList.remove('hidden');
   if (!killerId) $('death-by').textContent = '관전 중';
 }
@@ -413,7 +423,7 @@ function onKill({ k, v, head, respawn }) {
     $('death-by').textContent = k ? `${nameOf(k)}에게 당했습니다` : '자기장에 당했습니다';
     onDeathLocal();
   } else if (k === myId) {
-    centerMsg(`${nameOf(v)} 처치${head ? ' (헤드샷)' : ''}${phase === 'L' ? '' : ' +200'}`);
+    centerMsg(`${nameOf(v)} 처치${head ? ' (헤드샷)' : ''}`);
   }
 }
 
@@ -472,45 +482,62 @@ function renderCards() {
   });
 }
 
-// ---- 상점 ----
-let shopOpen = false;
-function openShop() {
+// ---- 캐릭터 고르기 (입장 화면 + 대기실·준비 시간의 C 창) ----
+let charSelOpen = false;
+function openCharSel() {
   if (!(phase === 'B' || phase === 'L') || !alive) return;
-  shopOpen = true;
-  renderShop();
-  $('shop').classList.remove('hidden');
+  charSelOpen = true;
+  renderCharSel();
+  $('charsel').classList.remove('hidden');
 }
-function closeShop() {
-  shopOpen = false;
-  $('shop').classList.add('hidden');
+function closeCharSel() {
+  charSelOpen = false;
+  $('charsel').classList.add('hidden');
 }
-function toggleShop() { if (shopOpen) closeShop(); else openShop(); }
+function toggleCharSel() { if (charSelOpen) closeCharSel(); else openCharSel(); }
 
-// 돈 확인은 서버가 한다 (이번 구매 시간에 산 것을 바꾸면 환불까지 계산)
-function buy(idx) {
-  if (!shopOpen || me.w === idx) return;
-  ws.send(JSON.stringify({ t: 'buy', w: idx }));
+// 바꿀 수 있는지는 서버가 확인한다 (대기실·준비 시간, 살아 있을 때)
+function chooseChar(id) {
+  if (!charSelOpen || id === myChar) return;
+  ws.send(JSON.stringify({ t: 'char', c: id }));
   sfx.buy();
 }
 
-function renderShop() {
-  const free = phase === 'L';
-  $('shop-money').textContent = free ? '대기실: 전부 무료(연습)' : `${money.toLocaleString()} 코인`;
-  $('shop-list').innerHTML = '';
-  WEAPONS.forEach((w, i) => {
+function renderCharSel() { renderCharList($('charsel-list'), true); }
+
+function renderCharList(el, keysShown) {
+  el.innerHTML = '';
+  CHAR_IDS.forEach((id, i) => {
+    const c = CHARACTERS[id], w = WEAPONS[c.weapon];
     const li = document.createElement('li');
-    const owned = me && me.w === i;
-    const can = free || w.price <= money;
-    li.className = owned ? 'owned' : can ? '' : 'poor';
-    li.dataset.shop = i;
-    li.innerHTML = '<kbd></kbd><span class="nm"></span><span class="st"></span><span class="pr"></span>';
+    li.className = id === myChar ? 'sel' : '';
+    li.dataset.char = id;
+    li.style.setProperty('--c', c.color);
+    li.innerHTML = '<kbd></kbd><span class="nm"></span><span class="rl"></span><span class="st"></span><span class="st"></span><span class="ab"></span>';
     li.querySelector('kbd').textContent = i + 1;
-    li.querySelector('.nm').textContent = w.name;
-    li.querySelector('.st').textContent = `${w.pellets > 1 ? `${w.dmg}×${w.pellets}` : w.dmg} 피해 · ${w.mag}발 · ${w.auto ? '연사' : '단발'}`;
-    li.querySelector('.pr').textContent = owned ? '보유' : w.price ? w.price.toLocaleString() : '무료';
-    $('shop-list').append(li);
+    li.querySelector('kbd').hidden = !keysShown;
+    li.querySelector('.nm').textContent = c.name;
+    li.querySelector('.rl').textContent = c.role;
+    const st = li.querySelectorAll('.st');
+    st[0].textContent = `체력 ${c.hp} · 속도 ${c.speed}`;
+    st[1].textContent = `${w.name} · ${w.dmg} 피해 · ${w.mag}발 · ${w.auto ? '연사' : '단발'}`;
+    li.querySelector('.ab').textContent = `[E] ${c.ability.name}: ${c.ability.desc} (${c.ability.cooldown / 60}초)`;
+    el.append(li);
   });
 }
+
+// 입장 화면: 눌러서 고르기 (게임 안 C 창은 숫자 키나 클릭)
+$('lobby-chars').addEventListener('click', (e) => {
+  const li = e.target.closest('[data-char]');
+  if (!li) return;
+  myChar = li.dataset.char;
+  storageSet('char', myChar);
+  renderCharList($('lobby-chars'), false);
+});
+$('charsel-list').addEventListener('click', (e) => {
+  const li = e.target.closest('[data-char]');
+  if (li) chooseChar(li.dataset.char);
+});
 
 // ---- 화면 알림 ----
 let bannerTimer = 0;
@@ -650,7 +677,7 @@ function onFx({ id, o, e }) {
   sfx.far(me ? Math.hypot(o[0] - me.x, o[2] - me.z) : 30, w);
 }
 
-const scoped = () => aiming && alive && me.w === 4 && me.rl === 0;
+const scoped = () => aiming && alive && !!WEAPONS[me.w].scope && me.rl === 0;
 
 // ---- HUD ----
 const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
@@ -658,20 +685,22 @@ const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(
 function updateHud(now) {
   const w = WEAPONS[me.w];
   $('hp-num').textContent = alive ? hp : 0;
-  const maxHp = myId === giantId ? GIANT.hp : MAX_HP;
+  const maxHp = myId === giantId ? GIANT.hp : charOf(me.c).hp;
   $('hp-bar').style.width = `${Math.min(1, (alive ? hp : 0) / maxHp) * 100}%`;
   $('hp-bar').className = hp <= 30 ? 'low' : '';
   $('ammo-num').textContent = me.ammo;
   $('ammo-max').textContent = `/ ${w.mag}`;
   $('weapon-name').textContent = w.name;
-  $('money').textContent = phase === 'L' ? '' : `${money.toLocaleString()} 코인`;
+  const ab = charOf(me.c).ability;
+  $('skill-name').textContent = ab.name;
+  $('skill-cd').textContent = me.ab > 0 ? `${(me.ab / 60).toFixed(1)}초` : '준비됨';
+  $('skill-cd').className = me.ab > 0 ? '' : 'ready';
   $('reload').classList.toggle('hidden', !(alive && me.rl > 0));
   if (!alive) {
     $('death-timer').textContent = respawnAt
       ? `${Math.max(0, Math.ceil((respawnAt - now) / 1000))}초 후 부활`
       : '다음 라운드까지 관전 · 클릭해서 다른 사람 보기';
   }
-  if (shopOpen) renderShop();
   $('hp').classList.toggle('hidden', ghost);
   $('ammo').classList.toggle('hidden', ghost);
   if (ghost) {
@@ -688,8 +717,8 @@ function updateHud(now) {
     top = '대기실';
     sub = starting && timeLeft > 0 ? `${Math.ceil(timeLeft)}초 후 경기 시작` : players.size < 2 ? '2명 이상 모이면 시작 · 지금은 연습' : '';
   } else if (phase === 'B') {
-    top = `${round}라운드 · 구매 ${Math.ceil(timeLeft)}`;
-    sub = 'B 상점';
+    top = `${round}라운드 · 준비 ${Math.ceil(timeLeft)}`;
+    sub = isTouch ? '캐릭터 버튼으로 변경' : 'C 캐릭터 변경';
   } else if (phase === 'R') {
     const zs = zoneStatus(zoneTime);
     top = `${round}라운드`;
@@ -712,7 +741,8 @@ if (isTouch) {
   renderer.setPixelRatio(Math.min(devicePixelRatio, 1.25)); // 폰 성능
   renderer.setSize(innerWidth, innerHeight);
   $('ghost-keys').textContent = '놓기 · 지우기 버튼 · 위/아래 버튼으로 높이';
-  $('shop-foot').textContent = '눌러서 구매 · 상점 버튼으로 닫기 · 살아남으면 다음 라운드에도 유지';
+  $('skill-key').hidden = true; // 터치는 스킬 버튼이 따로 있다
+  $('charsel-foot').textContent = '눌러서 고르기 · 캐릭터 버튼으로 닫기 · 대기실과 준비 시간에만 바꿀 수 있음';
   initTouch({
     active: () => joined,
     look(dx, dy) {
@@ -721,13 +751,13 @@ if (isTouch) {
       pitch = Math.max(-1.55, Math.min(1.55, pitch - dy * sens));
     },
     tap(act, i) {
-      if (act === 'shop') toggleShop();
+      if (act === 'char') toggleCharSel();
       else if (act === 'board') $('board').classList.toggle('hidden');
       else if (act === 'place') ghostAction(true);
       else if (act === 'remove') ghostAction(false);
       else if (act === 'vote') ghostVote();
       else if (act === 'aim') aiming = !aiming;
-      else if (act === 'buy') buy(i);
+      else if (act === 'pickChar') chooseChar(i);
       else if (act === 'card' && cardPick?.chooser === myId && !cardPick.picked) pickCard(i);
     },
   });
@@ -736,9 +766,9 @@ if (isTouch) {
 function updateTouchUi() {
   const show = (id, v) => $(id).classList.toggle('hidden', !v);
   const voting = phase === 'R' && zone?.[7];
-  for (const id of ['t-fire', 't-jump', 't-reload']) show(id, alive);
-  show('t-aim', alive && me.w === 4);
-  show('t-shop', alive && (phase === 'B' || phase === 'L'));
+  for (const id of ['t-fire', 't-jump', 't-reload', 't-skill']) show(id, alive);
+  show('t-aim', alive && !!WEAPONS[me.w].scope);
+  show('t-char', alive && (phase === 'B' || phase === 'L'));
   for (const id of ['t-place', 't-remove', 't-up', 't-down']) show(id, ghost);
   show('t-vote', ghost && voting);
   $('t-aim').classList.toggle('on', aiming);
@@ -754,10 +784,11 @@ function frame(now) {
     acc += dt;
     while (acc >= TICK) {
       acc -= TICK;
-      const k = alive ? maskInput(keyBits(), phase) : ghost ? keyBits() & ~(KEY.FIRE | KEY.RELOAD) : 0;
+      const k = alive ? maskInput(keyBits(), phase) : ghost ? keyBits() & ~(KEY.FIRE | KEY.RELOAD | KEY.SKILL) : 0;
       const inp = { s: ++seq, k, y: yaw, p: pitch, rt: view ? Math.round(view.tick * 100) / 100 : 0 };
       if (alive) {
         prev = { ...me };
+        if (stepSkill(me, inp, grav())) sfx.skill();
         stepPlayer(me, inp, map, grav());
         const spread = stepWeapon(me, inp.k);
         if (spread >= 0) localShot(inp, spread);

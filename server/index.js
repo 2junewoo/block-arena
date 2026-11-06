@@ -1,11 +1,12 @@
-// 게임 서버: 정적 파일 + WebSocket. 위치·사격·라운드는 서버가 판정하고 클라이언트는 입력만 보낸다
+// 게임 서버: 정적 파일 + WebSocket. 위치·사격·스킬·라운드는 서버가 판정하고 클라이언트는 입력만 보낸다
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { createMap, SPAWNS, W, D, H, B, BLOCK_HP, GHOST_REMOVABLE } from '../shared/map.js';
-import { TICK, P, WEAPONS, MAX_HP, GHOST, newState, stepPlayer, stepGhost, stepWeapon, shotDirs, maskInput, damageAt } from '../shared/sim.js';
+import { TICK, P, WEAPONS, GHOST, newState, stepPlayer, stepSkill, stepGhost, stepWeapon, shotDirs, maskInput, damageAt } from '../shared/sim.js';
+import { charOf, validChar } from '../shared/characters.js';
 import { rayBlocks, rayBox, hitboxes } from '../shared/ray.js';
 import { ZONE_START, ZONE_STAGES, ZONE_FINAL_DPS } from '../shared/zone.js';
 import { CARDS, GIANT, CARD_BLOCK_HP, gravityMul, breakableByCard } from '../shared/cards.js';
@@ -23,15 +24,10 @@ const SEC = 60;
 const RULES = {
   winRounds: 5,
   startCountdown: 5 * SEC, // 대기실에서 2명 모이면
-  buy: 15 * SEC,
+  prep: 10 * SEC, // 준비 시간: 캐릭터를 바꿀 수 있다
   roundEnd: 6 * SEC, // 이 사이에 규칙 카드를 고른다
   matchEnd: 8 * SEC,
   lobbyRespawn: 3 * SEC,
-  startMoney: 800,
-  maxMoney: 9000,
-  killReward: 200,
-  roundPay: 1900, // 라운드마다 모두
-  winBonus: 1000, // 라운드 승자 추가
 };
 
 // ---- 정적 파일 ----
@@ -87,7 +83,7 @@ function roster(room) {
   broadcast(room, {
     t: 'roster',
     players: [...room.players.values()].map((p) => ({
-      id: p.id, name: p.name, color: p.color, kills: p.kills, deaths: p.deaths, wins: p.wins,
+      id: p.id, name: p.name, color: p.color, char: p.char, kills: p.kills, deaths: p.deaths, wins: p.wins, blocked: p.blocked,
     })),
   });
 }
@@ -104,9 +100,12 @@ function farthestSpawn(room, self) {
   return best;
 }
 
+// 최대 체력: 캐릭터마다 다르고, 거인 카드면 거인 체력
+const maxHp = (p) => (p.id === p.room.giant ? GIANT.hp : charOf(p.char).hp);
+
 function spawn(p, at) {
-  p.state = newState(at, p.weapon);
-  p.hp = p.id === p.room.giant ? GIANT.hp : MAX_HP;
+  p.state = newState(at, p.char);
+  p.hp = maxHp(p);
   p.alive = true;
   p.ghost = false;
   p.respawnAt = Infinity;
@@ -149,15 +148,13 @@ function becomeGhost(p) {
   p.ghostReady = tick + 2 * SEC;
 }
 
-// 망령 블록이 총알을 막으면 놓은 망령에게 코인
+// 망령 블록이 총알을 막으면 놓은 망령의 "막은 피해"에 더한다 (점수판에 표시)
 function ghostCredit(room, key, absorbed) {
   const owner = room.players.get(room.blockOwner.get(key));
-  if (!owner) return;
-  const coins = Math.min(absorbed * GHOST.coinPerDmg, GHOST.coinCap - owner.ghostEarn);
-  if (coins <= 0) return;
-  owner.ghostEarn += coins;
-  owner.money = Math.min(RULES.maxMoney, owner.money + coins);
-  send(owner.ws, { t: 'ghostCoin', n: coins, total: owner.ghostEarn });
+  if (!owner || absorbed <= 0) return;
+  owner.blocked += absorbed;
+  owner.roundBlocked += absorbed;
+  send(owner.ws, { t: 'ghostBlocked', n: absorbed, total: owner.roundBlocked });
 }
 
 const NEIGHBORS = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
@@ -230,9 +227,7 @@ function startMatch(room) {
   room.round = 0;
   room.pick = null;
   for (const p of room.players.values()) {
-    p.wins = 0; p.kills = 0; p.deaths = 0;
-    p.money = RULES.startMoney;
-    p.weapon = 0;
+    p.wins = 0; p.kills = 0; p.deaths = 0; p.blocked = 0;
   }
   roster(room);
   startRound(room);
@@ -248,10 +243,7 @@ function startRound(room) {
   const spots = [...SPAWNS].sort(() => Math.random() - 0.5);
   let i = 0;
   for (const p of room.players.values()) {
-    if (p.lostWeapon) p.weapon = 0;
-    p.lostWeapon = false;
-    p.bought = null;
-    p.ghostEarn = 0;
+    p.roundBlocked = 0;
     spawn(p, spots[i++ % spots.length]);
   }
   resetMap(room);
@@ -259,7 +251,7 @@ function startRound(room) {
   room.votes = new Map(); // 망령 id -> [x, z]
   room.liveTick = 0;
   room.zone = { ...room.zones[0], dps: 0, next: room.zones[0], shrinking: false, voting: false };
-  setPhase(room, 'B', RULES.buy);
+  setPhase(room, 'B', RULES.prep);
   if (room.card) broadcast(room, { t: 'card', card: room.card, giant: room.giant });
 }
 
@@ -318,8 +310,6 @@ function updateZone(room) {
 function endRound(room) {
   const alive = [...room.players.values()].filter((p) => p.alive);
   const winner = alive.length === 1 ? alive[0] : null;
-  for (const p of room.players.values())
-    p.money = Math.min(RULES.maxMoney, p.money + RULES.roundPay + (p === winner ? RULES.winBonus : 0));
   if (winner) winner.wins++;
   broadcast(room, { t: 'roundEnd', winner: winner ? winner.id : 0, rd: room.round });
   roster(room);
@@ -329,8 +319,6 @@ function endRound(room) {
 
 function backToLobby(room) {
   for (const p of room.players.values()) {
-    p.weapon = 0;
-    p.money = RULES.startMoney;
     p.wins = 0;
     if (!p.alive) spawn(p, farthestSpawn(room, p));
   }
@@ -425,9 +413,8 @@ function join(ws, msg) {
   const p = {
     id: nextId++, ws, name, slot, color: COLORS[slot], room,
     state: null, queue: [], lastSeq: 0, yaw: 0, pitch: 0,
-    hp: MAX_HP, alive: true, respawnAt: Infinity, kills: 0, deaths: 0, wins: 0, hist: [],
-    money: RULES.startMoney, weapon: 0, lostWeapon: false, bought: null,
-    ghost: false, ghostReady: 0, ghostEarn: 0,
+    char: validChar(msg.char), hp: 0, alive: true, respawnAt: Infinity, kills: 0, deaths: 0, wins: 0, hist: [],
+    ghost: false, ghostReady: 0, blocked: 0, roundBlocked: 0,
   };
   spawn(p, farthestSpawn(room, p));
   // 라운드 도중에 들어오면 다음 라운드까지 망령
@@ -446,19 +433,16 @@ function leave(p) {
   else roster(room);
 }
 
-function buy(p, idx) {
-  const room = p.room, w = WEAPONS[idx];
-  if (!w || !p.alive || (room.phase !== 'B' && room.phase !== 'L')) return;
-  if (p.weapon === idx) return;
-  if (room.phase === 'B') {
-    // 이번 구매 시간에 산 걸 다른 걸로 바꾸면 환불
-    const refund = p.bought !== null ? WEAPONS[p.bought].price : 0;
-    if (p.money + refund < w.price) return;
-    p.money += refund - w.price;
-    p.bought = idx === 0 ? null : idx;
-  } // 대기실에선 연습용으로 공짜
-  p.weapon = idx;
-  Object.assign(p.state, { w: idx, ammo: w.mag, cd: 0, rl: 0, heat: 0 });
+// 캐릭터 바꾸기: 대기실과 준비 시간에만, 살아 있을 때. 자리는 그대로, 무기·스킬·체력은 새로
+function setChar(p, c) {
+  const room = p.room;
+  c = validChar(c);
+  if (!p.alive || p.char === c || (room.phase !== 'B' && room.phase !== 'L')) return;
+  p.char = c;
+  const s = p.state;
+  p.state = newState([s.x, s.y, s.z], c);
+  p.hp = maxHp(p);
+  roster(room);
 }
 
 // rt 틱(소수 가능) 때 q가 있던 위치. 기록이 없으면 null
@@ -482,16 +466,12 @@ function damage(room, attacker, target, amount, head) {
   target.hp = 0;
   target.alive = false;
   target.deaths++;
-  target.lostWeapon = true;
   if (room.phase === 'L') target.respawnAt = tick + RULES.lobbyRespawn;
   else {
     becomeGhost(target);
     if (!room.firstDead) room.firstDead = target.id;
   }
-  if (attacker) {
-    attacker.kills++;
-    if (room.phase !== 'L') attacker.money = Math.min(RULES.maxMoney, attacker.money + RULES.killReward);
-  }
+  if (attacker) attacker.kills++;
   broadcast(room, {
     t: 'kill', k: attacker ? attacker.id : 0, v: target.id, head,
     respawn: room.phase === 'L' ? RULES.lobbyRespawn * TICK : 0,
@@ -546,14 +526,14 @@ wss.on('connection', (ws) => {
     try { msg = JSON.parse(raw); } catch { return; }
     if (msg.t === 'join' && !me) me = join(ws, msg) || null;
     else if (msg.t === 'ping') send(ws, { t: 'pong', c: msg.c });
-    else if (msg.t === 'buy' && me) buy(me, msg.w | 0);
+    else if (msg.t === 'char' && me) setChar(me, String(msg.c));
     else if (msg.t === 'gb' && me) ghostBlock(me, msg);
     else if (msg.t === 'vote' && me) vote(me);
     else if (msg.t === 'pick' && me) pickCard(me, msg.i | 0);
     else if (msg.t === 'tp' && me && process.env.DEV) Object.assign(me.state, { x: +msg.x, y: +msg.y, z: +msg.z }); // 테스트용 순간이동
     else if (msg.t === 'i' && me) {
       const k = msg.k | 0, s = msg.s | 0;
-      if (k < 0 || k > 255 || s <= me.lastSeq) return;
+      if (k < 0 || k > 511 || s <= me.lastSeq) return;
       if (![msg.y, msg.p, msg.rt].every(Number.isFinite)) return;
       me.queue.push({ s, k, y: msg.y, p: Math.max(-1.55, Math.min(1.55, msg.p)), rt: msg.rt });
       if (me.queue.length > 30) me.queue.shift();
@@ -582,6 +562,8 @@ setInterval(() => {
         inp.k = maskInput(inp.k, room.phase);
         p.yaw = inp.y;
         p.pitch = inp.p;
+        const used = stepSkill(p.state, inp, gravityMul(room.card));
+        if (used === 'heal') p.hp = Math.min(maxHp(p), p.hp + charOf(p.char).ability.amount);
         stepPlayer(p.state, inp, room.map, gravityMul(room.card));
         const spread = stepWeapon(p.state, inp.k);
         if (spread >= 0) fire(room, p, inp, spread);
@@ -611,7 +593,8 @@ setInterval(() => {
         ps: [...room.players.values()].map((p) => {
           const s = p.state;
           return [p.id, s.x, s.y, s.z, s.vx, s.vy, s.vz, s.g ? 1 : 0, p.yaw, p.pitch, p.lastSeq,
-            p.hp, p.alive ? 1 : 0, s.ammo, s.cd, s.rl, s.heat, s.w, s.tr ? 1 : 0, p.money, p.ghost ? 1 : 0];
+            p.hp, p.alive ? 1 : 0, s.ammo, s.cd, s.rl, s.heat, s.w, s.tr ? 1 : 0, p.ghost ? 1 : 0,
+            s.c, s.ab, s.dash, s.dx, s.dz];
         }),
       });
     }

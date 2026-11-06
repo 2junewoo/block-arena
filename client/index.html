@@ -14,6 +14,8 @@
       <h1>블록 아레나</h1>
       <label>이름<input id="name" maxlength="12" placeholder="플레이어"></label>
       <label>방 코드<input id="room" maxlength="4" placeholder="비우면 새 방"></label>
+      <div class="pick-label">캐릭터 <span>(대기실·준비 시간에 C로 바꿀 수 있음)</span></div>
+      <ul id="lobby-chars" class="char-list"></ul>
       <button id="join">입장</button>
       <p id="error"></p>
     </div>
@@ -22,7 +24,7 @@
   <div id="resume" class="overlay hidden">
     <div class="panel">
       <p class="big">클릭해서 계속</p>
-      <p class="hint">WASD 이동 · Space 점프 · 클릭 사격 · R 재장전<br>B 상점 · 오른쪽 클릭 저격 조준 · Tab 점수판 · Esc 마우스 풀기</p>
+      <p class="hint">WASD 이동 · Space 점프 · 클릭 사격 · R 재장전 · E 스킬<br>C 캐릭터 변경(대기실·준비 시간) · Tab 점수판 · Esc 마우스 풀기</p>
     </div>
   </div>
 
@@ -50,7 +52,7 @@
     <div id="banner" class="hidden"><div id="banner-title"></div><div id="banner-sub"></div></div>
     <div id="hp"><span id="hp-num">100</span><div class="bar"><div id="hp-bar"></div></div></div>
     <div id="ammo">
-      <div id="money"></div>
+      <div id="skill"><b id="skill-key">E</b> <span id="skill-name"></span> <span id="skill-cd"></span></div>
       <div id="weapon-name"></div>
       <div><span id="reload" class="hidden">재장전 중</span><span id="ammo-num"></span><span id="ammo-max"></span></div>
     </div>
@@ -60,10 +62,10 @@
       <div id="ghost-vote"></div>
     </div>
     <div id="death" class="hidden"><p id="death-by"></p><p id="death-watch"></p><p id="death-timer"></p></div>
-    <div id="shop" class="hidden">
-      <div class="shop-head"><b>상점</b><span id="shop-money"></span></div>
-      <ul id="shop-list"></ul>
-      <div class="shop-foot" id="shop-foot">숫자 키로 구매 · B 닫기 · 살아남으면 다음 라운드에도 유지</div>
+    <div id="charsel" class="hidden">
+      <div class="charsel-head"><b>캐릭터 변경</b></div>
+      <ul id="charsel-list" class="char-list"></ul>
+      <div class="charsel-foot" id="charsel-foot">숫자 키로 고르기 · C 닫기 · 대기실과 준비 시간에만 바꿀 수 있음</div>
     </div>
     <div id="touch-ui">
       <div id="stick" class="hidden"><div id="knob"></div></div>
@@ -71,7 +73,8 @@
       <div class="tbtn hidden" id="t-jump">점프</div>
       <div class="tbtn small hidden" id="t-reload">R</div>
       <div class="tbtn small hidden" id="t-aim" data-act="aim">조준</div>
-      <div class="tbtn pill hidden" id="t-shop" data-act="shop">상점</div>
+      <div class="tbtn hidden" id="t-skill">스킬</div>
+      <div class="tbtn pill hidden" id="t-char" data-act="char">캐릭터</div>
       <div class="tbtn pill" id="t-board" data-act="board">점수</div>
       <div class="tbtn big ghost hidden" id="t-place" data-act="place">놓기</div>
       <div class="tbtn small ghost hidden" id="t-remove" data-act="remove">지우기</div>
@@ -80,7 +83,7 @@
       <div class="tbtn pill ghost hidden" id="t-vote" data-act="vote">여기로 투표</div>
     </div>
     <div id="board" class="hidden">
-      <table><thead><tr><th>이름</th><th>라운드 승</th><th>처치</th><th>죽음</th></tr></thead><tbody id="board-rows"></tbody></table>
+      <table><thead><tr><th>이름</th><th>캐릭터</th><th>라운드 승</th><th>처치</th><th>죽음</th><th>망령 방어</th></tr></thead><tbody id="board-rows"></tbody></table>
     </div>
   </div>
 

@@ -1,24 +1,22 @@
-// 이동·무기: 서버(판정)와 클라이언트(예측)가 똑같이 돌려야 하므로 여기 한 곳에만 둔다
+// 이동·무기·스킬: 서버(판정)와 클라이언트(예측)가 똑같이 돌려야 하므로 여기 한 곳에만 둔다
+import { charOf } from './characters.js';
+
 export const TICK = 1 / 60;
 export const P = { hw: 0.3, h: 1.85, eye: 1.6, speed: 6, jump: 8, gravity: 24 };
-export const KEY = { F: 1, B: 2, L: 4, R: 8, J: 16, FIRE: 32, RELOAD: 64, DOWN: 128 };
-export const MAX_HP = 100;
-// 단위: 틱(1/60초), 라디안. falloff = [이 거리(m)부터, 피해 배율]
+export const KEY = { F: 1, B: 2, L: 4, R: 8, J: 16, FIRE: 32, RELOAD: 64, DOWN: 128, SKILL: 256 };
+// 무기는 캐릭터마다 하나 (characters.js의 weapon 번호)
+// 단위: 틱(1/60초), 라디안. falloff = [이 거리(m)부터, 피해 배율], scope = 오른쪽 클릭 조준
 export const WEAPONS = [
-  { name: '권총', price: 0, auto: false, mag: 12, rate: 12, reload: 90, dmg: 24, headMul: 2, range: 80, pellets: 1,
-    falloff: [25, 0.8], spread: 0.006, moveSpread: 0.02, airSpread: 0.06, heatSpread: 0.006, heatMax: 6 },
-  { name: '기관단총', price: 1600, auto: true, mag: 30, rate: 5, reload: 100, dmg: 18, headMul: 2, range: 80, pellets: 1,
-    falloff: [20, 0.75], spread: 0.012, moveSpread: 0.018, airSpread: 0.05, heatSpread: 0.003, heatMax: 10 },
-  { name: '소총', price: 2900, auto: true, mag: 25, rate: 6, reload: 120, dmg: 25, headMul: 2, range: 120, pellets: 1,
-    falloff: null, spread: 0.004, moveSpread: 0.03, airSpread: 0.08, heatSpread: 0.004, heatMax: 10 },
-  { name: '샷건', price: 1800, auto: false, mag: 6, rate: 50, reload: 140, dmg: 14, headMul: 1.5, range: 40, pellets: 8,
-    falloff: [10, 0.5], spread: 0.07, moveSpread: 0.075, airSpread: 0.09, heatSpread: 0, heatMax: 0 },
-  { name: '저격총', price: 4500, auto: false, mag: 5, rate: 75, reload: 180, dmg: 80, headMul: 2, range: 150, pellets: 1,
-    falloff: null, spread: 0.001, moveSpread: 0.08, airSpread: 0.15, heatSpread: 0, heatMax: 0 },
+  { name: '풀베기 카빈', auto: false, mag: 12, rate: 15, reload: 114, dmg: 30, headMul: 2, range: 120, pellets: 1,
+    falloff: null, spread: 0.004, moveSpread: 0.025, airSpread: 0.07, heatSpread: 0.004, heatMax: 6 },
+  { name: '노래 라이플', auto: true, mag: 30, rate: 6, reload: 108, dmg: 18, headMul: 2, range: 120, pellets: 1,
+    falloff: [30, 0.85], spread: 0.007, moveSpread: 0.03, airSpread: 0.08, heatSpread: 0.004, heatMax: 10 },
+  { name: '우라 SMG', auto: true, mag: 35, rate: 4, reload: 90, dmg: 13, headMul: 2, range: 80, pellets: 1,
+    falloff: [20, 0.75], spread: 0.014, moveSpread: 0.018, airSpread: 0.05, heatSpread: 0.003, heatMax: 10 },
 ];
 
 // 라운드 단계: L 대기실, B 구매, R 전투, E 라운드 끝, O 경기 끝
-// 구매 시간엔 움직이거나 쏠 수 없고, 라운드·경기가 끝난 뒤엔 쏠 수 없다
+// 준비 시간엔 움직이거나 쏘거나 스킬을 쓸 수 없고, 라운드·경기가 끝난 뒤엔 쏠 수 없다
 export function maskInput(k, phase) {
   if (phase === 'B') return k & KEY.RELOAD;
   if (phase === 'E' || phase === 'O') return k & ~KEY.FIRE;
@@ -33,8 +31,39 @@ export function damageAt(w, dist, head) {
 
 const EPS = 1e-4;
 
-export function newState([x, y, z], w = 0) {
-  return { x, y, z, vx: 0, vy: 0, vz: 0, g: false, w, ammo: WEAPONS[w].mag, cd: 0, rl: 0, heat: 0, tr: false };
+// c = 캐릭터 id. ab = 스킬 쿨다운(틱), dash = 남은 돌진 틱, dx·dz = 돌진 방향
+export function newState([x, y, z], c) {
+  const w = charOf(c).weapon;
+  return { x, y, z, vx: 0, vy: 0, vz: 0, g: false, c, w, ammo: WEAPONS[w].mag, cd: 0, rl: 0, heat: 0, tr: false, ab: 0, dash: 0, dx: 0, dz: 0 };
+}
+
+// 누른 키 방향(수평, 길이 1). 안 누르면 [0, 0]
+function moveDir(k, yaw) {
+  const mz = (k & KEY.F ? 1 : 0) - (k & KEY.B ? 1 : 0);
+  const mx = (k & KEY.R ? 1 : 0) - (k & KEY.L ? 1 : 0);
+  let dx = -Math.sin(yaw) * mz + Math.cos(yaw) * mx;
+  let dz = -Math.cos(yaw) * mz - Math.sin(yaw) * mx;
+  const len = Math.hypot(dx, dz);
+  if (len > 0) { dx /= len; dz /= len; }
+  return [dx, dz];
+}
+
+// 스킬(E). 쓰면 스킬 type을, 안 쓰면 null을 돌려준다 (회복처럼 체력이 걸린 건 서버가 처리)
+// 높이 뛰기는 저중력 카드에서도 같은 높이가 되도록 중력 배율에 맞춰 줄인다
+export function stepSkill(s, inp, grav = 1) {
+  if (s.ab > 0) s.ab--;
+  if (s.dash > 0) s.dash--;
+  if (!(inp.k & KEY.SKILL) || s.ab > 0) return null;
+  const ab = charOf(s.c).ability;
+  s.ab = ab.cooldown;
+  if (ab.type === 'dash') {
+    let [dx, dz] = moveDir(inp.k, inp.y);
+    if (!dx && !dz) { dx = -Math.sin(inp.y); dz = -Math.cos(inp.y); } // 가만히 있으면 보는 방향
+    s.dash = ab.ticks; s.dx = dx; s.dz = dz;
+  } else if (ab.type === 'leap') {
+    s.vy = ab.power * Math.sqrt(grav);
+  }
+  return ab.type;
 }
 
 function hits(map, x, y, z) {
@@ -50,16 +79,18 @@ function hits(map, x, y, z) {
 
 // inp = { k: 키 비트, y: yaw }, grav = 중력 배율 (규칙 카드)
 export function stepPlayer(s, inp, map, grav = 1) {
-  const k = inp.k, yaw = inp.y;
-  const mz = (k & KEY.F ? 1 : 0) - (k & KEY.B ? 1 : 0);
-  const mx = (k & KEY.R ? 1 : 0) - (k & KEY.L ? 1 : 0);
-  let dx = -Math.sin(yaw) * mz + Math.cos(yaw) * mx;
-  let dz = -Math.cos(yaw) * mz - Math.sin(yaw) * mx;
-  const len = Math.hypot(dx, dz);
-  if (len > 0) { dx /= len; dz /= len; }
-  s.vx = dx * P.speed;
-  s.vz = dz * P.speed;
-  if (k & KEY.J && s.g) s.vy = P.jump;
+  const k = inp.k;
+  const [dx, dz] = moveDir(k, inp.y);
+  if (s.dash > 0) {
+    const sp = charOf(s.c).ability.speed;
+    s.vx = s.dx * sp;
+    s.vz = s.dz * sp;
+  } else {
+    const sp = charOf(s.c).speed;
+    s.vx = dx * sp;
+    s.vz = dz * sp;
+  }
+  if (k & KEY.J && s.g) s.vy = Math.max(s.vy, P.jump);
   s.vy = Math.max(s.vy - P.gravity * grav * TICK, -30);
 
   let nx = s.x + s.vx * TICK;
@@ -90,16 +121,11 @@ export function stepPlayer(s, inp, map, grav = 1) {
 }
 
 // ---- 망령: 벽을 통과해 날아다닌다. y는 눈높이 ----
-export const GHOST = { speed: 9, vert: 6, reach: 9, cooldown: 8 * 60, coinPerDmg: 2, coinCap: 400 };
+export const GHOST = { speed: 9, vert: 6, reach: 9, cooldown: 8 * 60 };
 
 export function stepGhost(s, inp, w, d, h) {
-  const k = inp.k, yaw = inp.y;
-  const mz = (k & KEY.F ? 1 : 0) - (k & KEY.B ? 1 : 0);
-  const mx = (k & KEY.R ? 1 : 0) - (k & KEY.L ? 1 : 0);
-  let dx = -Math.sin(yaw) * mz + Math.cos(yaw) * mx;
-  let dz = -Math.cos(yaw) * mz - Math.sin(yaw) * mx;
-  const len = Math.hypot(dx, dz);
-  if (len > 0) { dx /= len; dz /= len; }
+  const k = inp.k;
+  const [dx, dz] = moveDir(k, inp.y);
   const dy = (k & KEY.J ? 1 : 0) - (k & KEY.DOWN ? 1 : 0);
   s.vx = dx * GHOST.speed;
   s.vz = dz * GHOST.speed;
